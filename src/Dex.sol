@@ -22,11 +22,26 @@ contract Dex {
     uint256 public tokenYBalance;
     uint256 public tokenXFees;
     uint256 public tokenYFees;
+    
+    struct Provision {
+        address provider;
+        uint256 amount;
+    }
+
+    Provision[] liquidityProvisions;
 
     constructor(address tokenXAddress, address tokenYAddress) {
         tokenX = IERC20(tokenXAddress);
         tokenY = IERC20(tokenYAddress);
+        tokenXBalance = 0;
+        tokenYBalance = 0;
+        tokenXFees = 0;
+        tokenYFees = 0;
         lpToken = new LPToken();
+    }    
+
+    function getTokenAddresses() public view returns (address, address, address) {
+        return (address(tokenX), address(tokenY), address(lpToken));
     }
 
     function calculateExchangeRate(uint256 srcTokenAmount, uint256 srcTokenBalance, uint256 dstTokenBalance) internal pure returns (uint256) {
@@ -34,10 +49,10 @@ contract Dex {
     }
 
     function calculateSwapFee(uint256 amount) internal pure returns (uint256) {
-        return amount * 1 / 10;
+        return amount * 1 / 1000;
     }
 
-    function swap(uint256 tokenXAmount, uint256 tokenYAmount, uint256 tokenMinimumOutputAmount) public returns (uint256 outputAmount) {
+    function swap(uint256 tokenXAmount, uint256 tokenYAmount, uint256 tokenMinimumOutputAmount) public returns (uint256) {
         uint256 srcTokenAmount;
         uint256 dstTokenAmount;
         uint256 srcTokenBalance;
@@ -82,40 +97,104 @@ contract Dex {
         return dstTokenAmount;
     }
 
-    function addLiquidity(uint256 tokenXAmount, uint256 tokenYAmount, uint256 minimumLPTokenAmount) public returns (uint256 LPTokenAmount) {
+    function addLiquidity(uint256 tokenXAmount, uint256 tokenYAmount, uint256 minimumLPTokenAmount) public returns (uint256) {
         // TODO: check that adding liquidity does not alter exchange rate
-        uint256 exchangeRatePrev;
-        uint256 exchangeRateAfter;
-        uint256 LPTokenAmount;
-        // is this safe?
-        exchangeRatePrev = calculateExchangeRate(1 ether, tokenXBalance, tokenYBalance);
-        exchangeRateAfter = calculateExchangeRate(1 ether, tokenXBalance + tokenXAmount, tokenYBalance + tokenYAmount);
-        require(exchangeRatePrev == exchangeRateAfter, "addLiquidity: cannot add liquidity in a manner that changes the exchange rate");
-        // Not a good idea, but 'works'
-        LPTokenAmount = tokenXAmount;
-        require(LPTokenAmount >= minimumLPTokenAmount, "addLiquidity: minimum LP token amount is not fulfilled");
-        tokenX.transferFrom(msg.sender, address(this), tokenXAmount);
-        tokenXBalance += tokenXAmount;
-        tokenY.transferFrom(msg.sender, address(this), tokenYAmount);
-        tokenYBalance += tokenYAmount;
-        lpToken.transfer(msg.sender, LPTokenAmount);
+        uint256 appropriateTokenXAmount;
+        uint256 appropriateTokenYAmount;
+        uint256 tokenXActualTransferAmount;
+        uint256 tokenYActualTransferAmount;
+        uint256 lpTokenAmount;
+        bool issueLpToken = false;
+
+        require(tokenXAmount > 0 && tokenYAmount > 0, "addLiquidity: must deposit nonzero number of tokens");
+        if (tokenXBalance == 0 && tokenYBalance == 0) {
+            // only at the first call
+            tokenXActualTransferAmount = tokenXAmount;
+            tokenYActualTransferAmount = tokenYAmount;
+        }   
+
+        else {
+            require(tokenXBalance > 0 && tokenYBalance > 0, "addLiquidity: balance of all tokens must be nonzero");
+            appropriateTokenXAmount = calculateExchangeRate(tokenYAmount, tokenYBalance, tokenXBalance);
+            appropriateTokenYAmount = calculateExchangeRate(tokenXAmount, tokenXBalance, tokenYBalance);
+            if (appropriateTokenXAmount >= tokenXAmount) {
+                // too much Y given
+                tokenYActualTransferAmount = appropriateTokenYAmount;
+                tokenXActualTransferAmount = tokenXAmount;
+            }
+            else {
+                // too much X given
+                tokenXActualTransferAmount = appropriateTokenXAmount;
+                tokenYActualTransferAmount = tokenYAmount;
+            }
+            // only issue LP tokens if the liquidity provider is not the initial provider
+            issueLpToken = true;
+        }
+
+        tokenX.transferFrom(msg.sender, address(this), tokenXActualTransferAmount);
+        tokenXBalance += tokenXActualTransferAmount;
+        tokenY.transferFrom(msg.sender, address(this), tokenYActualTransferAmount);
+        tokenYBalance += tokenYActualTransferAmount;
+        
+        if (issueLpToken) {
+            // Not a good idea, but it 'works'
+            lpTokenAmount = tokenXActualTransferAmount;
+            require(lpTokenAmount >= minimumLPTokenAmount, "addLiquidity: minimum LP token amount is not fulfilled");
+            lpToken.transfer(msg.sender, lpTokenAmount);
+
+            for (uint i = 0; i < liquidityProvisions.length; i++) {
+                Provision storage p = liquidityProvisions[i];
+                if (p.provider == msg.sender) {
+                    p.amount += lpTokenAmount;
+                    return lpTokenAmount;
+                }
+            }
+            Provision memory p;
+            p.provider = msg.sender;
+            p.amount = lpTokenAmount;
+            liquidityProvisions.push(p);
+            return lpTokenAmount;
+        }
+        else {
+            return 0;
+        }
     }
 
-    function removeLiquidity(uint256 LPTokenAmount, uint256 minimumTokenXAmount, uint256 minimumTokenYAmount) public {
+    function removeLiquidity(uint256 lpTokenAmount, uint256 minimumTokenXAmount, uint256 minimumTokenYAmount) public {
         uint256 tokenXAmount;
         uint256 tokenYAmount;
-        uint256 exchangeRatePrev;
-        uint256 exchangeRateAfter;
-        require(lpToken.balanceOf(msg.sender) >= LPTokenAmount, "removeLiquidity: insufficient LP token");
-        tokenXAmount = LPTokenAmount;
+        uint256 feeRedemptionAmountX;
+        uint256 feeRedemptionAmountY;
+        require(lpToken.balanceOf(msg.sender) >= lpTokenAmount, "removeLiquidity: insufficient LP token");
+        tokenXAmount = lpTokenAmount;
         tokenYAmount = calculateExchangeRate(tokenXAmount, tokenXBalance, tokenYBalance);
         require(tokenXAmount >= minimumTokenXAmount, "removeLiquidity: minimum X token amount is not fulfilled");
         require(tokenYAmount >= minimumTokenYAmount, "removeLiquidity: minimum Y token amount is not fulfilled");
-        tokenX.transferFrom(address(this), msg.sender, tokenXAmount);
+        tokenX.transfer(msg.sender, tokenXAmount);
         tokenXBalance -= tokenXAmount;
-        tokenY.transferFrom(address(this), msg.sender, tokenYAmount);
+        tokenY.transfer(msg.sender, tokenYAmount);
         tokenYBalance -= tokenYAmount;
-        lpToken.transferFrom(msg.sender, address(this), LPTokenAmount);
+        lpToken.transferFrom(msg.sender, address(this), lpTokenAmount);
+
+        // now, redeem fees
+        uint256 lpTokenTotal = 0;
+        uint256 senderLpTokenAmount = 0;
+        for (uint i = 0; i < liquidityProvisions.length; i++) {
+            Provision storage p = liquidityProvisions[i];
+            lpTokenTotal += p.amount;
+            if (p.provider == msg.sender) { 
+                // vulnerable to gas exhuastion, should remove entry instead of zeroing it out
+                senderLpTokenAmount = p.amount;
+                p.amount = 0;
+            }
+        }
+        assert(senderLpTokenAmount > 0);
+        feeRedemptionAmountX = tokenXFees * senderLpTokenAmount / lpTokenTotal;
+        feeRedemptionAmountY = tokenYFees * senderLpTokenAmount / lpTokenTotal;
+        tokenX.transfer(msg.sender, feeRedemptionAmountX);
+        tokenXFees -= feeRedemptionAmountX;
+        tokenY.transfer(msg.sender, feeRedemptionAmountY);
+        tokenYFees -= feeRedemptionAmountY;
     }
 
     function transfer(address to, uint256 lpAmount) public returns (bool) {
