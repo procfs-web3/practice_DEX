@@ -29,6 +29,7 @@ contract Dex {
     }
 
     Provision[] liquidityProvisions;
+    uint256 initialLpTokenIssueAmount;
 
     constructor(address tokenXAddress, address tokenYAddress) {
         tokenX = IERC20(tokenXAddress);
@@ -50,6 +51,19 @@ contract Dex {
 
     function calculateSwapFee(uint256 amount) internal pure returns (uint256) {
         return amount * 1 / 1000;
+    }
+
+    function sqrt(uint256 y) internal pure returns (uint256 z) {
+        if (y > 3) {
+            z = y;
+            uint256 x = y / 2 + 1;
+            while (x < z) {
+                z = x;
+                x = (y / x + x) / 2;
+            }
+        } else if (y != 0) {
+            z = 1;
+        }
     }
 
     function swap(uint256 tokenXAmount, uint256 tokenYAmount, uint256 tokenMinimumOutputAmount) public returns (uint256) {
@@ -104,13 +118,14 @@ contract Dex {
         uint256 tokenXActualTransferAmount;
         uint256 tokenYActualTransferAmount;
         uint256 lpTokenAmount;
-        bool issueLpToken = false;
+        bool firstTime;
 
         require(tokenXAmount > 0 && tokenYAmount > 0, "addLiquidity: must deposit nonzero number of tokens");
         if (tokenXBalance == 0 && tokenYBalance == 0) {
             // only at the first call
             tokenXActualTransferAmount = tokenXAmount;
             tokenYActualTransferAmount = tokenYAmount;
+            firstTime = true;
         }   
 
         else {
@@ -128,7 +143,7 @@ contract Dex {
                 tokenYActualTransferAmount = tokenYAmount;
             }
             // only issue LP tokens if the liquidity provider is not the initial provider
-            issueLpToken = true;
+            firstTime = false;
         }
 
         tokenX.transferFrom(msg.sender, address(this), tokenXActualTransferAmount);
@@ -136,9 +151,13 @@ contract Dex {
         tokenY.transferFrom(msg.sender, address(this), tokenYActualTransferAmount);
         tokenYBalance += tokenYActualTransferAmount;
         
-        if (issueLpToken) {
-            // Not a good idea, but it 'works'
-            lpTokenAmount = tokenXActualTransferAmount;
+        if (!firstTime) {
+            uint256 lpSum = initialLpTokenIssueAmount;
+            for (uint i = 0; i < liquidityProvisions.length; i++) {
+                Provision storage p = liquidityProvisions[i];
+                lpSum += p.amount;
+            }
+            lpTokenAmount = tokenXActualTransferAmount * lpSum / (tokenXBalance - tokenXActualTransferAmount);
             require(lpTokenAmount >= minimumLPTokenAmount, "addLiquidity: minimum LP token amount is not fulfilled");
             lpToken.transfer(msg.sender, lpTokenAmount);
 
@@ -156,7 +175,8 @@ contract Dex {
             return lpTokenAmount;
         }
         else {
-            return 0;
+            initialLpTokenIssueAmount = sqrt(tokenXActualTransferAmount * tokenYActualTransferAmount);
+            return initialLpTokenIssueAmount;
         }
     }
 
@@ -165,8 +185,15 @@ contract Dex {
         uint256 tokenYAmount;
         uint256 feeRedemptionAmountX;
         uint256 feeRedemptionAmountY;
+        uint256 lpSum;
+        uint256 senderLpTokenAmount;
         require(lpToken.balanceOf(msg.sender) >= lpTokenAmount, "removeLiquidity: insufficient LP token");
-        tokenXAmount = lpTokenAmount;
+        lpSum = initialLpTokenIssueAmount;
+        for (uint i = 0; i < liquidityProvisions.length; i++) {
+            Provision storage p = liquidityProvisions[i];
+            lpSum += p.amount;
+        }
+        tokenXAmount = tokenXBalance * lpTokenAmount / lpSum;
         tokenYAmount = calculateExchangeRate(tokenXAmount, tokenXBalance, tokenYBalance);
         require(tokenXAmount >= minimumTokenXAmount, "removeLiquidity: minimum X token amount is not fulfilled");
         require(tokenYAmount >= minimumTokenYAmount, "removeLiquidity: minimum Y token amount is not fulfilled");
@@ -176,12 +203,12 @@ contract Dex {
         tokenYBalance -= tokenYAmount;
         lpToken.transferFrom(msg.sender, address(this), lpTokenAmount);
 
-        // now, redeem fees
-        uint256 lpTokenTotal = 0;
-        uint256 senderLpTokenAmount = 0;
+        // now, redeem fees. In this case, don't include initial lp token issue amount to lpSum
+        lpSum = 0;
+        senderLpTokenAmount = 0;
         for (uint i = 0; i < liquidityProvisions.length; i++) {
             Provision storage p = liquidityProvisions[i];
-            lpTokenTotal += p.amount;
+            lpSum += p.amount;
             if (p.provider == msg.sender) { 
                 // vulnerable to gas exhuastion, should remove entry instead of zeroing it out
                 senderLpTokenAmount = p.amount;
@@ -189,8 +216,8 @@ contract Dex {
             }
         }
         assert(senderLpTokenAmount > 0);
-        feeRedemptionAmountX = tokenXFees * senderLpTokenAmount / lpTokenTotal;
-        feeRedemptionAmountY = tokenYFees * senderLpTokenAmount / lpTokenTotal;
+        feeRedemptionAmountX = tokenXFees * senderLpTokenAmount / lpSum;
+        feeRedemptionAmountY = tokenYFees * senderLpTokenAmount / lpSum;
         tokenX.transfer(msg.sender, feeRedemptionAmountX);
         tokenXFees -= feeRedemptionAmountX;
         tokenY.transfer(msg.sender, feeRedemptionAmountY);
