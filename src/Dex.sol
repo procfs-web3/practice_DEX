@@ -20,6 +20,8 @@ contract Dex {
 
     uint256 public tokenXBalance;
     uint256 public tokenYBalance;
+    uint256 public tokenXFees;
+    uint256 public tokenYFees;
 
     constructor(address tokenXAddress, address tokenYAddress) {
         tokenX = IERC20(tokenXAddress);
@@ -31,11 +33,16 @@ contract Dex {
         return srcTokenAmount * dstTokenBalance / srcTokenBalance;
     }
 
+    function calculateSwapFee(uint256 amount) internal pure returns (uint256) {
+        return amount * 1 / 10;
+    }
+
     function swap(uint256 tokenXAmount, uint256 tokenYAmount, uint256 tokenMinimumOutputAmount) public returns (uint256 outputAmount) {
         uint256 srcTokenAmount;
         uint256 dstTokenAmount;
         uint256 srcTokenBalance;
         uint256 dstTokenBalance;
+        uint256 fee;
         IERC20 srcToken;
         IERC20 dstToken;
         require((tokenXAmount == 0 && tokenYAmount > 0) || (tokenYAmount == 0 && tokenXAmount > 0), "swap: ambiguous arguments");
@@ -53,19 +60,24 @@ contract Dex {
             srcTokenBalance = tokenXBalance;
             dstTokenBalance = tokenYBalance;
         }
+        fee = calculateSwapFee(srcTokenAmount);
+        require(fee > 0, "swap: swap amount is too small to incur fees");
         dstTokenAmount = calculateExchangeRate(srcTokenAmount, srcTokenBalance, dstTokenBalance);
         require(dstTokenAmount >= tokenMinimumOutputAmount, "swap: minimum output amount not fulfilled");
-        srcToken.transferFrom(msg.sender, address(this), srcTokenAmount);
+        require(fee + srcTokenAmount <= srcToken.balanceOf(msg.sender), "swap: insufficient funds");
+        srcToken.transferFrom(msg.sender, address(this), srcTokenAmount + fee);
         srcTokenBalance += srcTokenAmount;
         dstToken.transfer(msg.sender, dstTokenAmount);
         dstTokenBalance -= dstTokenAmount;
         if (tokenXAmount == 0) {
             tokenYBalance = srcTokenBalance;
             tokenXBalance = dstTokenBalance;
+            tokenYFees += fee;
         }
         else {
             tokenXBalance = srcTokenBalance;
             tokenYBalance = dstTokenBalance;
+            tokenXFees += fee;
         }
         return dstTokenAmount;
     }
