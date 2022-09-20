@@ -46,7 +46,7 @@ contract Dex {
     }
 
     function calculateExchangeRate(uint256 srcTokenAmount, uint256 srcTokenBalance, uint256 dstTokenBalance) internal pure returns (uint256) {
-        return srcTokenBalance * dstTokenBalance / (srcTokenBalance - srcTokenAmount) - dstTokenBalance;
+        return dstTokenBalance - srcTokenBalance * dstTokenBalance / (srcTokenBalance + srcTokenAmount);
     }
 
     function calculateSwapFee(uint256 amount) internal pure returns (uint256) {
