@@ -46,7 +46,7 @@ contract Dex {
     }
 
     function calculateExchangeRate(uint256 srcTokenAmount, uint256 srcTokenBalance, uint256 dstTokenBalance) internal pure returns (uint256) {
-        return srcTokenAmount * dstTokenBalance / srcTokenBalance;
+        return srcTokenBalance * dstTokenBalance / (srcTokenBalance - srcTokenAmount) - dstTokenBalance;
     }
 
     function calculateSwapFee(uint256 amount) internal pure returns (uint256) {
@@ -130,8 +130,8 @@ contract Dex {
 
         else {
             require(tokenXBalance > 0 && tokenYBalance > 0, "addLiquidity: balance of all tokens must be nonzero");
-            appropriateTokenXAmount = calculateExchangeRate(tokenYAmount, tokenYBalance, tokenXBalance);
-            appropriateTokenYAmount = calculateExchangeRate(tokenXAmount, tokenXBalance, tokenYBalance);
+            appropriateTokenXAmount = tokenXBalance * tokenYAmount / tokenYBalance;
+            appropriateTokenYAmount = tokenYBalance * tokenXAmount / tokenXBalance;
             if (appropriateTokenXAmount >= tokenXAmount) {
                 // too much Y given
                 tokenYActualTransferAmount = appropriateTokenYAmount;
