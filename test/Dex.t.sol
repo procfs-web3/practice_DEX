@@ -3,202 +3,250 @@ pragma solidity ^0.8.13;
 
 import "forge-std/Test.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "src/Dex.sol";
+import "../src/Dex.sol";
 
-contract MintableToken is ERC20 {
-    constructor(string memory name, string memory symbol) ERC20(name, symbol) {
-
-    }
-
-    function mint(address receiver, uint256 value) public {
-        super._mint(receiver, value);
+contract CustomERC20 is ERC20 {
+    constructor(string memory tokenName) ERC20(tokenName, tokenName) {
+        _mint(msg.sender, type(uint).max);
     }
 }
 
+/*
+ * Contract에서 필요한 만큼(또는 요청한 만큼)의 자산을 가져가도록 구현되어있다는 것을 가정하였습니다.
+ * (transferFrom을 통해)
+ */
 contract DexTest is Test {
-
-    Dex dex;
-    MintableToken tokenX;
-    MintableToken tokenY;
-    IERC20 lpToken;
+    Dex public dex;
+    ERC20 tokenX;
+    ERC20 tokenY;
 
     function setUp() public {
-        tokenX = new MintableToken("token X", "TX");
-        tokenY = new MintableToken("token Y", "TY");
-        tokenX.mint(address(this), 100 ether);
-        tokenY.mint(address(this), 100 ether);
+        tokenX = new CustomERC20("XXX");
+        tokenY = new CustomERC20("YYY");
+
         dex = new Dex(address(tokenX), address(tokenY));
-        (address _tokX, address _tokY, address lpTokenAddress) = dex.getTokenAddresses();
-        lpToken = IERC20(lpTokenAddress);
 
-        // provide initial liquidity
-        tokenX.approve(address(dex), 10 ether);
-        tokenY.approve(address(dex), 10 ether);
-        dex.addLiquidity(10 ether, 10 ether, 0);
+        tokenX.approve(address(dex), type(uint).max);
+        tokenY.approve(address(dex), type(uint).max);
     }
 
-    function testAddLiquidityBasic() public {
-        tokenX.approve(address(dex), 10 ether);
-        tokenY.approve(address(dex), 10 ether);
-        uint lpTokenAmount1 = dex.addLiquidity(5 ether, 5 ether, 0);
-        tokenX.approve(address(dex), 20 ether);
-        tokenY.approve(address(dex), 20 ether);
-        uint256 lpTokenAmount2 = dex.addLiquidity(20 ether, 20 ether, 0);
-        require(lpTokenAmount2 > lpTokenAmount1);
+    function testAddLiquidity1() external {
+        uint firstLPReturn = dex.addLiquidity(1000 ether, 1000 ether, 0);
+        emit log_named_uint("firstLPReturn", firstLPReturn);
+
+        uint secondLPReturn = dex.addLiquidity(1000 ether, 1000 ether, 0);
+        emit log_named_uint("secondLPReturn", secondLPReturn);
+
+        assertEq(firstLPReturn, secondLPReturn, "AddLiquidity Error 1");
     }
 
-    function testRemoveLiquidityBasic() public {
-        address provider = address(0x11223344);
-        tokenX.transfer(provider, 10 ether);
-        tokenY.transfer(provider, 10 ether);
+    function testAddLiquidity2() external {
+        uint firstLPReturn = dex.addLiquidity(1000 ether, 1000 ether, 0);
+        emit log_named_uint("firstLPReturn", firstLPReturn);
 
-        vm.startPrank(provider);
-        tokenX.approve(address(dex), 10 ether);
-        tokenY.approve(address(dex), 10 ether);
-        uint lpTokenAmount = dex.addLiquidity(10 ether, 10 ether, 0);
-        uint256 lpBalance = lpToken.balanceOf(provider);
-        uint256 balBefore = tokenX.balanceOf(provider);
-        lpToken.approve(address(dex), lpBalance);
-        dex.removeLiquidity(lpTokenAmount, 0, 0);
-        uint256 balAfter = tokenX.balanceOf(provider);
-        assertEq(balAfter, balBefore + 10 ether);
+        uint secondLPReturn = dex.addLiquidity(1000 ether * 2, 1000 ether * 2, 0);
+        emit log_named_uint("secondLPReturn", secondLPReturn);
+
+        assertEq(firstLPReturn * 2, secondLPReturn, "AddLiquidity Error 2");
     }
 
-    function testSwapBasic() public {
-        address actor1 = address(0xaa);
-        address actor2 = address(0xbb);
-        tokenX.approve(address(dex), 10 ether);
-        tokenY.approve(address(dex), 10 ether);
-        uint256 lpTokenAmount = dex.addLiquidity(10 ether, 10 ether, 0);
-        tokenX.transfer(actor1, 1 ether);
-        vm.startPrank(actor1);
-        tokenX.approve(address(dex), 1 ether);
-        uint256 tokenYAmountFirst = dex.swap(0.1 ether, 0, 0);
-        uint256 tokenYAmountSecond = dex.swap(0.1 ether, 0, 0);
-        assert(tokenYAmountFirst > tokenYAmountSecond);
+    function testAddLiquidity3() external {
+        uint firstLPReturn = dex.addLiquidity(1000 ether, 1000 ether, 0);
+        emit log_named_uint("firstLPReturn", firstLPReturn);
+
+        (bool success, ) = address(dex).call(abi.encodeWithSelector(dex.addLiquidity.selector, 1000 ether, 1000 ether, firstLPReturn * 10001 / 10000));
+        assertTrue(!success, "AddLiquidity minimum LP return error");
     }
 
-    function testFeeBasic() public {
-        address actor1 = address(0xaa);
-        tokenX.approve(address(dex), 10 ether);
-        tokenY.approve(address(dex), 10 ether);
-        uint256 lpTokenAmount = dex.addLiquidity(10 ether, 10 ether, 0);
-        tokenX.transfer(actor1, 1 ether);
-        vm.startPrank(actor1);
-        tokenX.approve(address(dex), 1 ether);
-        uint256 balBefore = tokenX.balanceOf(actor1);
-        uint256 tokenYAmountFirst = dex.swap(0.1 ether, 0, 0);
-        uint256 balAfter = tokenX.balanceOf(actor1);
-        assertEq(balAfter, balBefore - 0.1001 ether);
-        assertEq(dex.tokenXFees(), 0.0001 ether);
+    function testAddLiquidity4() external {
+        uint firstLPReturn = dex.addLiquidity(1000 ether, 1000 ether, 0);
+        emit log_named_uint("firstLPReturn", firstLPReturn);
+
+        (bool success, bytes memory alret) = address(dex).call(abi.encodeWithSelector(dex.addLiquidity.selector, 1000 ether, 4000 ether, 0));
+        uint256 lpret = uint(bytes32(alret));
+        assertTrue((firstLPReturn == lpret) || !success, "AddLiquidity imbalance add liquidity test error");
     }
 
-    function testFeeRedeem() public {
-        address actor1 = address(0xaa);
-        address actor2 = address(0xbb);
-        address actor3 = address(0xcc);
-        tokenX.transfer(actor1, 1 ether);
-        tokenY.transfer(actor1, 1 ether);
-        tokenX.transfer(actor2, 1 ether);
-        tokenY.transfer(actor2, 1 ether);
-        tokenX.transfer(actor3, 1 ether);
-        tokenY.transfer(actor3, 1 ether);
-        
-        // provide liquidity
-        vm.startPrank(actor1);
-        tokenX.approve(address(dex), 1 ether);
-        tokenY.approve(address(dex), 1 ether);
-        uint lpAmount1 = dex.addLiquidity(1 ether, 1 ether, 0);
+    function testAddLiquidity5() external {
+        address sender = vm.addr(1);
+        tokenX.transfer(sender, 100 ether);
+        tokenY.transfer(sender, 100 ether);
+
+        vm.expectRevert("ERC20: insufficient allowance");
+        vm.startPrank(sender);
+        dex.addLiquidity(1000 ether, 1000 ether, 0);
+
+        tokenX.approve(address(dex), type(uint).max);
+        tokenY.approve(address(dex), type(uint).max);
+
+        vm.expectRevert("ERC20: transfer amount exceeds balance");
+        dex.addLiquidity(1000 ether, 1000 ether, 0);
+
         vm.stopPrank();
 
-        vm.startPrank(actor2);
-        tokenX.approve(address(dex), 1 ether);
-        tokenY.approve(address(dex), 1 ether);
-        uint lpAmount2 = dex.addLiquidity(1 ether, 1 ether, 0);
-        vm.stopPrank();
-
-        assertEq(lpAmount1, lpAmount2);
-
-        // swap
-        vm.startPrank(actor3);
-        tokenX.approve(address(dex), 1 ether);
-        dex.swap(0.1 ether, 0, 0);
-        vm.stopPrank();
-        assertEq(dex.tokenXFees(), 0.0001 ether);
-        
-        // redeem for actor1
-        vm.startPrank(actor1);
-        lpToken.approve(address(dex), lpAmount1);
-        uint actor1XBefore = tokenX.balanceOf(actor1);
-        dex.removeLiquidity(lpAmount1, 0, 0);
-        uint actor1XAfter = tokenX.balanceOf(actor1);
-        assertEq(lpToken.balanceOf(actor1), 0);
-        vm.stopPrank();
-
-        // redeem for actor2
-        vm.startPrank(actor2);
-        lpToken.approve(address(dex), lpAmount2);
-        uint actor2XBefore = tokenX.balanceOf(actor2);
-        dex.removeLiquidity(lpAmount2, 0, 0);
-        uint actor2XAfter = tokenX.balanceOf(actor2);
-        assertEq(lpToken.balanceOf(actor2), 0);
-        vm.stopPrank();
-        // the two must redeem the same amount of tokens
-        assertEq(actor2XAfter - actor2XBefore, actor1XAfter - actor1XBefore);
     }
 
-    function testTokenY() public {
-        address actor1 = address(0xaa);
-        address actor2 = address(0xbb);
-        address actor3 = address(0xcc);
-        tokenX.transfer(actor1, 1 ether);
-        tokenY.transfer(actor1, 1 ether);
-        tokenX.transfer(actor2, 1 ether);
-        tokenY.transfer(actor2, 1 ether);
-        tokenX.transfer(actor3, 1 ether);
-        tokenY.transfer(actor3, 1 ether);
-        
-        // provide liquidity
-        vm.startPrank(actor1);
-        tokenX.approve(address(dex), 1 ether);
-        tokenY.approve(address(dex), 1 ether);
-        uint lpAmount1 = dex.addLiquidity(1 ether, 1 ether, 0);
-        vm.stopPrank();
+    function testAddLiquidity6() external {
+        (bool success, ) = address(dex).call(abi.encodeWithSelector(dex.addLiquidity.selector, 0 ether, 0 ether, 0));
+        assertTrue(!success, "AddLiquidity invalid initialization check error - 1");
+        (success, ) = address(dex).call(abi.encodeWithSelector(dex.addLiquidity.selector, 1 ether, 0 ether, 0));
+        assertTrue(!success, "AddLiquidity invalid initialization check error - 2");
+        (success, ) = address(dex).call(abi.encodeWithSelector(dex.addLiquidity.selector, 0 ether, 1 ether, 0));
+        assertTrue(!success, "AddLiquidity invalid initialization check error - 3");
+    }
 
-        vm.startPrank(actor2);
-        tokenX.approve(address(dex), 1 ether);
-        tokenY.approve(address(dex), 1 ether);
-        uint lpAmount2 = dex.addLiquidity(1 ether, 1 ether, 0);
-        vm.stopPrank();
+    function testRemoveLiquidity1() external {
+        uint firstLPReturn = dex.addLiquidity(1000 ether, 1000 ether, 0);
+        emit log_named_uint("firstLPReturn", firstLPReturn);
 
-        assertEq(lpAmount1, lpAmount2);
+        uint secondLPReturn = dex.addLiquidity(1000 ether * 2, 1000 ether * 2, 0);
+        emit log_named_uint("secondLPReturn", secondLPReturn);
 
-        // swap
-        vm.startPrank(actor3);
-        tokenY.approve(address(dex), 1 ether);
-        dex.swap(0, 0.1 ether, 0);
-        vm.stopPrank();
-        assertEq(dex.tokenYFees(), 0.0001 ether);
-        
-        // redeem for actor1
-        vm.startPrank(actor1);
-        lpToken.approve(address(dex), lpAmount1);
-        uint actor1YBefore = tokenY.balanceOf(actor1);
-        dex.removeLiquidity(lpAmount1, 0, 0);
-        uint actor1YAfter = tokenY.balanceOf(actor1);
-        assertEq(lpToken.balanceOf(actor1), 0);
-        vm.stopPrank();
+        (uint tx, uint ty) = dex.removeLiquidity(secondLPReturn, 0, 0);
+        assertEq(tx, 1000 ether * 2, "RemoveLiquiidty tx error");
+        assertEq(ty, 1000 ether * 2, "RemoveLiquiidty tx error");
+    }
 
-        // redeem for actor2
-        vm.startPrank(actor2);
-        lpToken.approve(address(dex), lpAmount2);
-        uint actor2YBefore = tokenY.balanceOf(actor2);
-        dex.removeLiquidity(lpAmount2, 0, 0);
-        uint actor2YAfter = tokenY.balanceOf(actor2);
-        assertEq(lpToken.balanceOf(actor2), 0);
-        vm.stopPrank();
-        // the two must redeem the same amount of tokens
-        assertEq(actor2YAfter - actor2YBefore, actor1YAfter - actor1YBefore);
+    function testRemoveLiquidity2() external {
+        uint firstLPReturn = dex.addLiquidity(1000 ether, 1000 ether, 0);
+        emit log_named_uint("firstLPReturn", firstLPReturn);
+
+        uint secondLPReturn = dex.addLiquidity(1000 ether * 2, 1000 ether * 2, 0);
+        emit log_named_uint("secondLPReturn", secondLPReturn);
+
+        (bool success, ) = address(dex).call(abi.encodeWithSelector(dex.removeLiquidity.selector, secondLPReturn, 2001 ether, 2001 ether));
+        assertTrue(!success, "RemoveLiquidity minimum return error");
+    }
+
+    function testRemoveLiquidity3() external {
+        uint firstLPReturn = dex.addLiquidity(1000 ether, 1000 ether, 0);
+        emit log_named_uint("firstLPReturn", firstLPReturn);
+
+        uint secondLPReturn = dex.addLiquidity(1000 ether * 2, 1000 ether * 2, 0);
+        emit log_named_uint("secondLPReturn", secondLPReturn);
+
+        (bool success, ) = address(dex).call(abi.encodeWithSelector(dex.removeLiquidity.selector, secondLPReturn*2));
+        assertTrue(!success, "RemoveLiquidity exceeds balance check error");
+    }
+
+    function testRemoveLiquidity4() external {
+        uint firstLPReturn = dex.addLiquidity(1000 ether, 1000 ether, 0);
+        emit log_named_uint("firstLPReturn", firstLPReturn);
+
+        uint secondLPReturn = dex.addLiquidity(1000 ether * 2, 1000 ether * 2, 0);
+        emit log_named_uint("secondLPReturn", secondLPReturn);
+
+        uint sumX;
+        uint sumY;
+        for (uint i=0; i<100; i++) {
+            sumX += dex.swap(0, 1000 ether, 0);
+            sumY += dex.swap(1000 ether, 0, 0);
+        }
+
+        // usedX = 1000 ether * 100
+        // usedY = 1000 ether * 100
+
+        uint poolAmountX = 1000 ether + 1000 ether * 2; // initial value
+        poolAmountX += 1000 ether * 100;
+        uint poolAmountY = 1000 ether + 1000 ether * 2; // initial value
+        poolAmountY += 1000 ether * 100;
+
+        poolAmountX -= sumX;
+        poolAmountY -= sumY;
+
+        emit log_named_uint("remaining poolAmountX", poolAmountX);
+        emit log_named_uint("remaining poolAmountY", poolAmountY);
+        (uint rx, uint ry) = dex.removeLiquidity(firstLPReturn, 0, 0);
+        bool successX = rx <= (poolAmountX * 10001 / 10000 / 3) && rx >= (poolAmountX * 9999 / 10000 / 3); // allow 0.01%;
+        bool successY = ry <= (poolAmountY * 10001 / 10000 / 3) && ry >= (poolAmountY * 9999 / 10000 / 3); // allow 0.01%;
+        assertTrue(successX, "remove liquidity after swap error; rx");
+        assertTrue(successY, "remove liquidity after swap error; ry");
+    }
+
+    function testSwap1() external {
+        dex.addLiquidity(3000 ether, 4000 ether, 0);
+        dex.addLiquidity(30000 ether * 2, 40000 ether * 2, 0);
+
+        // x -> y
+        uint output = dex.swap(300 ether, 0, 0);
+
+        uint poolAmountX = 60000 ether + 3000 ether;
+        uint poolAmountY = 80000 ether + 4000 ether;
+
+
+        int expectedOutput = -(int(poolAmountX * poolAmountY) / int(poolAmountX + 300 ether)) + int(poolAmountY);
+        expectedOutput = expectedOutput * 999 / 1000; // 0.1% fee
+        uint uExpectedOutput = uint(expectedOutput);
+
+        emit log_named_int("expected output", expectedOutput);
+        emit log_named_uint("real output", output);
+
+        bool success = output <= (uExpectedOutput * 10001 / 10000) && output >= (uExpectedOutput * 9999 / 10000); // allow 0.01%;
+        assertTrue(success, "Swap test fail 1; expected != return");
+    }
+
+    function testSwap2() external {
+        dex.addLiquidity(3000 ether, 4000 ether, 0);
+        dex.addLiquidity(30000 ether * 2, 40000 ether * 2, 0);
+
+        // y -> x
+        uint output = dex.swap(0, 6000 ether, 0);
+
+        uint poolAmountX = 60000 ether + 3000 ether;
+        uint poolAmountY = 80000 ether + 4000 ether;
+
+
+        int expectedOutput = -(int(poolAmountY * poolAmountX) / int(poolAmountY + 6000 ether)) + int(poolAmountX);
+        expectedOutput = expectedOutput * 999 / 1000; // 0.1% fee
+        uint uExpectedOutput = uint(expectedOutput);
+
+        emit log_named_int("expected output", expectedOutput);
+        emit log_named_uint("real output", output);
+
+        bool success = output <= (uExpectedOutput * 10001 / 10000) && output >= (uExpectedOutput * 9999 / 10000); // allow 0.01%;
+        assertTrue(success, "Swap test fail 2; expected != return");
+    }
+
+    function testSwap3() external {
+        dex.addLiquidity(3000 ether, 4000 ether, 0);
+        dex.addLiquidity(30000 ether * 2, 40000 ether * 2, 0);
+
+        // y -> x
+        // check invalid swap
+        (bool success, ) = address(dex).call(abi.encodeWithSelector(dex.swap.selector, 1, 6000 ether, 0));
+        assertTrue(!success, "Swap test fail 3; invalid input test failed");
+    }
+
+    function testSwap4() external {
+        dex.addLiquidity(3000 ether, 4000 ether, 0);
+        dex.addLiquidity(30000 ether * 2, 40000 ether * 2, 0);
+
+        // y -> x
+        uint poolAmountX = 60000 ether + 3000 ether;
+        uint poolAmountY = 80000 ether + 4000 ether;
+
+
+        int expectedOutput = -(int(poolAmountY * poolAmountX) / int(poolAmountY + 6000 ether)) + int(poolAmountX);
+        expectedOutput = expectedOutput * 999 / 1000; // 0.1% fee
+        uint uExpectedOutput = uint(expectedOutput);
+
+        emit log_named_int("expected output", expectedOutput);
+
+        (bool success, ) = address(dex).call(abi.encodeWithSelector(dex.swap.selector, 0, 6000 ether, uExpectedOutput * 1005 / 1000));
+        assertTrue(!success, "Swap test fail 4; minimum ouput amount check failed");
+    }
+
+    function testAddLiquidity7() external {
+        tokenX.transfer(address(dex), 1000 ether);
+        uint lp = dex.addLiquidity(3000 ether, 4000 ether, 0);
+        emit log_named_uint("LP", lp);
+
+        tokenX.transfer(address(dex), 1000 ether);
+        uint lp2 = dex.addLiquidity(5000 ether, 4000 ether, 0);
+        emit log_named_uint("LP", lp);
+
+        (uint rx, uint ry) = dex.removeLiquidity(lp, 0, 0);
+        assertEq(rx, 5000 ether, "rx failed");
+        assertEq(ry, 4000 ether, "ry failed");
     }
 }
